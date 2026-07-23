@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as native from "@gajae-code/natives";
 import { resolveManagedSessionScope } from "../src/sdk/session-directory";
+import { prepareManagedSessionScopeForWrite, resolveManagedScope } from "../src/session/internal/managed-session-scope";
 import {
 	ManagedSessionDescendantStore,
 	shouldFsyncManagedDirectory,
@@ -32,6 +33,25 @@ it("skips unsupported managed directory fsync on Windows", () => {
 	expect(shouldFsyncManagedDirectory("linux")).toBe(true);
 });
 describe.skipIf(process.platform !== "win32")("Windows managed session directory", () => {
+	it("re-prepares an existing scope binding without a read-only fsync EPERM", async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-session-directory-windows-binding-fsync-"));
+		temporaryDirectories.push(root);
+		const cwd = path.join(root, "workspace");
+		const agentDir = path.join(root, "agent");
+		await fs.mkdir(cwd);
+		const resolved = resolveManagedScope({ cwd, agentDir, sessionsRoot: path.join(agentDir, "sessions") });
+		if (resolved.kind === "error") throw new Error(resolved.message);
+
+		const first = await prepareManagedSessionScopeForWrite(resolved.scope, "windows-existing-verify-first");
+		expect(first.kind).toBe("resolved");
+
+		// The second preparation collides with the published binding and must flush it
+		// through fsyncCanonicalBinding. FlushFileBuffers requires a writable handle on
+		// Windows, so an O_RDONLY descriptor fails with EPERM -> durability_failed.
+		const second = await prepareManagedSessionScopeForWrite(resolved.scope, "windows-existing-verify-first");
+		expect(second).toEqual({ kind: "resolved", scope: resolved.scope });
+	});
+
 	it("uses one scope for a workspace and its junction alias", async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "gjc-session-directory-windows-"));
 		temporaryDirectories.push(root);
